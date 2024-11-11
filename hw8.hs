@@ -53,14 +53,17 @@ lexer :: String -> [Token]
 lexer (x:xs) | isDigit x =
   let (y,z) = span isDigit (x:xs)
    in CSym (read y) : lexer z
+
 -- boolean constants
 lexer xs | take 4 xs == "true"  = BSym True : lexer (drop 4 xs)
 lexer xs | take 5 xs == "false" = BSym False : lexer (drop 5 xs)
+
 -- binary operators
 lexer xs | take 4 xs == "else" = Keyword ElseK : lexer (drop 4 xs)
 lexer xs | take 2 xs == "if"   = Keyword IfK : lexer (drop 2 xs)
 lexer xs | take 6 xs == "return" = Keyword ReturnK : lexer (drop 6 xs)
 lexer ('f':'o':'r':xs) = Keyword ForK : lexer xs
+lexer (':':'=':xs) = AssignOp : lexer xs
 lexer ('=':'=':xs) = BOp EqOp : lexer xs
 lexer ('=':xs) = AssignOp : lexer xs
 lexer ('+':xs) = BOp AddOp : lexer xs
@@ -68,6 +71,16 @@ lexer ('<':xs) = BOp LtOp  : lexer xs
 lexer ('%':xs) = BOp ModOp : lexer xs
 lexer ('|':'|':xs) = BOp OrOp : lexer xs
 lexer ('&':'&':xs) = BOp AndOp : lexer xs
+lexer ('!':'=':xs) = BOp NeqOp : lexer xs
+lexer ('>':'=':xs) = BOp GteOp : lexer xs
+lexer ('>':xs) = BOp GtOp : lexer xs
+lexer ('<':'=':xs) = BOp LteOp : lexer xs
+lexer ('*':xs) = BOp MulOp : lexer xs
+lexer ('/':xs) = BOp DivOp : lexer xs
+lexer ('-':xs) = BOp SubOp : lexer xs
+lexer ('^':xs) = BOp ExpOp : lexer xs
+lexer ('!':xs) = NotOp : lexer xs
+
 -- punctuations
 lexer ('{':xs) = LBra : lexer xs
 lexer ('}':xs) = RBra : lexer xs
@@ -75,6 +88,7 @@ lexer ('(':xs) = LPar : lexer xs
 lexer (')':xs) = RPar : lexer xs
 lexer (',':xs) = Comma : lexer xs
 lexer (';':xs) = Semi : lexer xs
+
 -- variables
 lexer (x:xs) | isAlpha x =
   let (y,z) = span isAlpha (x:xs)
