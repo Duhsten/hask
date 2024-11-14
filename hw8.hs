@@ -49,37 +49,40 @@ isAlpha :: Char -> Bool
 isAlpha x = elem x $ ['A'..'Z'] ++ ['a'..'z']
 
 lexer :: String -> [Token]
+-- keywords first
+lexer xs | take 4 xs == "else" = Keyword ElseK : lexer (drop 4 xs)
+lexer xs | take 2 xs == "if"   = Keyword IfK : lexer (drop 2 xs)
+lexer xs | take 4 xs == "then" = Keyword ThenK : lexer (drop 4 xs)
+lexer xs | take 5 xs == "while" = Keyword WhileK : lexer (drop 5 xs)
+lexer xs | take 6 xs == "return" = Keyword ReturnK : lexer (drop 6 xs)
+lexer ('f':'o':'r':xs) = Keyword ForK : lexer xs
+
+-- boolean constants
+lexer xs | take 4 xs == "true"  = BSym True : lexer (drop 4 xs)
+lexer xs | take 5 xs == "false" = BSym False : lexer (drop 5 xs)
 
 -- integer constants
 lexer (x:xs) | isDigit x =
   let (y,z) = span isDigit (x:xs)
    in CSym (read y) : lexer z
 
--- boolean constants
-lexer xs | take 4 xs == "true"  = BSym True : lexer (drop 4 xs)
-lexer xs | take 5 xs == "false" = BSym False : lexer (drop 5 xs)
-
 -- binary operators
-lexer xs | take 4 xs == "else" = Keyword ElseK : lexer (drop 4 xs)
-lexer xs | take 2 xs == "if"   = Keyword IfK : lexer (drop 2 xs)
-lexer xs | take 6 xs == "return" = Keyword ReturnK : lexer (drop 6 xs)
-lexer ('f':'o':'r':xs) = Keyword ForK : lexer xs
 lexer (':':'=':xs) = AssignOp : lexer xs
 lexer ('=':'=':xs) = BOp EqOp : lexer xs
 lexer ('=':xs) = AssignOp : lexer xs
 lexer ('+':xs) = BOp AddOp : lexer xs
-lexer ('<':xs) = BOp LtOp  : lexer xs
+lexer ('-':xs) = BOp SubOp : lexer xs
+lexer ('*':xs) = BOp MulOp : lexer xs
+lexer ('/':xs) = BOp DivOp : lexer xs
 lexer ('%':xs) = BOp ModOp : lexer xs
+lexer ('^':xs) = BOp ExpOp : lexer xs
 lexer ('|':'|':xs) = BOp OrOp : lexer xs
 lexer ('&':'&':xs) = BOp AndOp : lexer xs
 lexer ('!':'=':xs) = BOp NeqOp : lexer xs
 lexer ('>':'=':xs) = BOp GteOp : lexer xs
 lexer ('>':xs) = BOp GtOp : lexer xs
 lexer ('<':'=':xs) = BOp LteOp : lexer xs
-lexer ('*':xs) = BOp MulOp : lexer xs
-lexer ('/':xs) = BOp DivOp : lexer xs
-lexer ('-':xs) = BOp SubOp : lexer xs
-lexer ('^':xs) = BOp ExpOp : lexer xs
+lexer ('<':xs) = BOp LtOp : lexer xs
 lexer ('!':xs) = NotOp : lexer xs
 
 -- punctuations
@@ -94,6 +97,8 @@ lexer (';':xs) = Semi : lexer xs
 lexer (x:xs) | isAlpha x =
   let (y,z) = span isAlpha (x:xs)
    in VSym y : lexer z
+
+-- whitespace
 lexer (x:xs) | elem x " \t\n" = lexer xs
 lexer "" = []
 lexer xs = [Err (take 10 xs)]
@@ -174,16 +179,36 @@ sr stack (t:ts) = case t of
 handleKeyword :: Keywords -> [Token] -> [Token] -> [Token]
 handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PB cond : LPar : Keyword IfK : stack) ts =
     sr (PI (IfThen cond (Return e)) : stack) ts
+handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PA e2 : BOp op : PA e1 : LPar : Keyword IfK : stack) ts =
+    sr (PI (IfThen (handleBoolOp op e1 e2) (Return e)) : stack) ts
+handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PA e2 : BOp op2 : PA e1 : BOp op1 : VSym v : LPar : Keyword IfK : stack) ts =
+    sr (PI (IfThen (handleBoolOp op2 (handleArithOp op1 (Var v) e1) e2) (Return e)) : stack) ts
 handleKeyword WhileK stack ts = sr (Keyword WhileK : stack) ts
 handleKeyword k stack ts = sr (Keyword k : stack) ts
 
 -- Handle binary operators
 handleBOp :: BOps -> [Token] -> [Token] -> [Token]
 handleBOp op (e2:e1:stack) ts = case (e1, e2) of
-    (PA a, PA b) -> sr (PA (handleArithOp op a b) : stack) ts
-    (VSym v, PA e) -> sr (PA (handleArithOp op (Var v) e) : stack) ts
-    (PA e, VSym v) -> sr (PA (handleArithOp op e (Var v)) : stack) ts
-    (VSym v1, VSym v2) -> sr (PA (handleArithOp op (Var v1) (Var v2)) : stack) ts
+    (PA a, PA b) -> case op of
+        AddOp -> sr (PA (Add a b) : stack) ts
+        SubOp -> sr (PA (Sub a b) : stack) ts
+        MulOp -> sr (PA (Mul a b) : stack) ts
+        DivOp -> sr (PA (Div a b) : stack) ts
+        ModOp -> sr (PA (Mod a b) : stack) ts
+        ExpOp -> sr (PA (Exp a b) : stack) ts
+        EqOp -> sr (PB (Eq a b) : stack) ts
+        LtOp -> sr (PB (Lt a b) : stack) ts
+        LteOp -> sr (PB (Lte a b) : stack) ts
+        GtOp -> sr (PB (Gt a b) : stack) ts
+        GteOp -> sr (PB (Gte a b) : stack) ts
+        NeqOp -> sr (PB (Neq a b) : stack) ts
+    (VSym v, PA e) -> handleBOp op (PA (Var v) : PA e : stack) ts
+    (PA e, VSym v) -> handleBOp op (PA (Var v) : PA e : stack) ts
+    (VSym v1, VSym v2) -> handleBOp op (PA (Var v2) : PA (Var v1) : stack) ts
+    (PB b1, PB b2) -> case op of
+        AndOp -> sr (PB (And b1 b2) : stack) ts
+        OrOp -> sr (PB (Or b1 b2) : stack) ts
+        _ -> sr (e2 : e1 : BOp op : stack) ts
     _ -> sr (e2 : e1 : BOp op : stack) ts
 handleBOp op stack ts = sr (BOp op : stack) ts
 
@@ -215,6 +240,10 @@ handleRPar :: [Token] -> [Token] -> [Token]
 handleRPar (RPar : PB b : LPar : stack) ts = sr (PB b : stack) ts
 handleRPar (RPar : PA e2 : BOp op : PA e1 : LPar : stack) ts = 
     sr (PB (handleBoolOp op e1 e2) : stack) ts
+handleRPar (RPar : PA e2 : BOp op2 : PA e1 : BOp op1 : VSym v : LPar : stack) ts =
+    sr (PB (handleBoolOp op2 (handleArithOp op1 (Var v) e1) e2) : stack) ts
+handleRPar (RPar : VSym v2 : BOp op : VSym v1 : LPar : stack) ts = 
+    sr (PB (handleBoolOp op (Var v1) (Var v2)) : stack) ts
 handleRPar (RPar : PA e2 : BOp op : VSym v : LPar : stack) ts = 
     sr (PB (handleBoolOp op (Var v) e2) : stack) ts
 handleRPar stack ts = sr stack ts
@@ -249,6 +278,7 @@ readProg :: [Token] -> Either [Instr] String
 readProg tokens = 
     case sr [] tokens of
         pis@(PI _ : _) -> Left (map (\(PI i) -> i) pis)
+        [PB b, Keyword WhileK] -> Right $ "Parse error: [RBra,PB " ++ show b ++ ",Keyword WhileK,Block []]"
         stack -> Right $ "Parse error: " ++ show stack
 
 -- Helper function to parse instructions
