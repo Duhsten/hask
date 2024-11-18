@@ -22,8 +22,7 @@ data Instr = Assign Vars AExpr -- assignment
     deriving (Eq,Show)
 
 
-
-data Keywords = IfK | ThenK | ElseK | WhileK | NopK | ReturnK | ForK
+data Keywords = IfK | ThenK | ElseK | WhileK | NopK | ReturnK
     deriving (Eq,Show)
 
 data BOps = AddOp | SubOp | MulOp | DivOp | ModOp | ExpOp
@@ -55,7 +54,6 @@ lexer xs | take 2 xs == "if"   = Keyword IfK : lexer (drop 2 xs)
 lexer xs | take 4 xs == "then" = Keyword ThenK : lexer (drop 4 xs)
 lexer xs | take 5 xs == "while" = Keyword WhileK : lexer (drop 5 xs)
 lexer xs | take 6 xs == "return" = Keyword ReturnK : lexer (drop 6 xs)
-lexer ('f':'o':'r':xs) = Keyword ForK : lexer xs
 
 -- boolean constants
 lexer xs | take 4 xs == "true"  = BSym True : lexer (drop 4 xs)
@@ -157,23 +155,40 @@ execList :: [Instr] -> Env -> Env
 execList [] env = env
 execList (i:is) env = execList is (exec i env)
 
+prec :: BOps -> Int
+prec AddOp = 10
+
 -- Shift-reduce parser
 sr :: [Token] -> [Token] -> [Token]
+sr (VSym v:ts) q = sr (PA (Var v):ts) q
+sr (CSym c:ts) q = sr (PA (Num c):ts) q
+sr (BSym b:ts) q = sr (PB (Const b):ts) q
+
+sr (PA y:BOp AddOp:PA x:ts) q = sr (PA (Add x y):ts) q 
+sr (PA y:BOp SubOp:PA x:ts) q = sr (PA (Sub x y):ts) q
+sr (PA y:BOp MulOp:PA x:ts) q = sr (PA (Mul x y):ts) q 
+sr (PA y:BOp DivOp:PA x:ts) q = sr (PA (Div x y):ts) q 
+sr (PA y:BOp ModOp:PA x:ts) q = sr (PA (Mod x y):ts) q 
+sr (PA y:BOp ExpOp:PA x:ts) q = sr (PA (Exp x y):ts) q 
+
+sr (PB y:BOp AndOp:PB x:ts) q = sr (PB (And x y):ts) q 
+sr (PB y:BOp OrOp:PB x:ts) q = sr (PB (Or x y):ts) q 
+sr (PA y:BOp EqOp:PA x:ts) q = sr (PB (Eq x y):ts) q 
+sr (PA y:BOp NeqOp:PA x:ts) q = sr (PB (Neq x y):ts) q 
+sr (PA y:BOp LtOp:PA x:ts) q = sr (PB (Lt x y):ts) q 
+sr (PA y:BOp LteOp:PA x:ts) q = sr (PB (Lte x y):ts) q
+sr (PA y:BOp GtOp:PA x:ts) q = sr (PB (Gt x y):ts) q 
+sr (PA y:BOp GteOp:PA x:ts) q = sr (PB (Gte x y):ts) q
+
+sr (Semi:PA y:AssignOp:PA (Var x):ts) q = sr (PI (Assign x y):ts) q
+sr (LBra:PB b:Keyword WhileK:ts) q = sr (PI (Do []):PB b:Keyword WhileK:ts) q
+sr (PI i:PI (Do is):ts) q =  sr (PI (Do (i:is)):ts) q
+sr (RBra:PI (Do is):ts) q = sr (PI (Do is):ts) q
+sr (PI i:PB b:Keyword WhileK:ts) q = sr (PI (While b i):ts) q
+
+sr s (q:qs) = sr (q:s) qs
 sr stack [] = reverse stack
-sr stack (t:ts) = case t of
-    VSym v -> sr (VSym v : stack) ts
-    CSym n -> sr (PA (Num n) : stack) ts
-    BSym b -> sr (PB (Const b) : stack) ts
-    BOp op -> handleBOp op stack ts
-    Semi -> handleSemi stack ts
-    RPar -> handleRPar stack ts
-    RBra -> handleRBra stack ts
-    LPar -> sr (LPar : stack) ts
-    LBra -> sr (LBra : stack) ts
-    NotOp -> sr (NotOp : stack) ts
-    Keyword k -> handleKeyword k stack ts
-    AssignOp -> sr (AssignOp : stack) ts
-    _ -> sr (t : stack) ts
+
 
 -- Handle keywords
 handleKeyword :: Keywords -> [Token] -> [Token] -> [Token]
@@ -275,11 +290,11 @@ handleRBra stack ts = sr stack ts
 
 -- Program reader
 readProg :: [Token] -> Either [Instr] String
-readProg tokens = 
-    case sr [] tokens of
-        pis@(PI _ : _) -> Left (map (\(PI i) -> i) pis)
-        [PB b, Keyword WhileK] -> Right $ "Parse error: [RBra,PB " ++ show b ++ ",Keyword WhileK,Block []]"
-        stack -> Right $ "Parse error: " ++ show stack
+readProg tokens = case sr [] tokens of
+    [PI i] -> Left [i]
+    pis@(PI _ : _) -> Left (map (\(PI i) -> i) pis)
+    [PB b, Keyword WhileK] -> Right $ "Parse error: incomplete while loop"
+    stack -> Right $ "Parse error: " ++ show stack
 
 -- Helper function to parse instructions
 parseInstructions :: [Token] -> [Instr]
@@ -290,7 +305,7 @@ parseInstructions tokens =
 
 
 
--- TESTS DO NOT MODIFY
+-- TESTS BELOW DO NOT MODIFY BELOW THIS LINE
 env1 :: Env
 env1 = [("sum",10), ("y",3), ("i",5), ("acc",1),("c",3),("n",2)]
 env2 :: Env
