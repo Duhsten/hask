@@ -160,34 +160,47 @@ prec AddOp = 10
 
 -- Shift-reduce parser
 sr :: [Token] -> [Token] -> [Token]
+-- Base cases for reducing variables and constants
 sr (VSym v:ts) q = sr (PA (Var v):ts) q
-sr (CSym c:ts) q = sr (PA (Num c):ts) q
+sr (CSym n:ts) q = sr (PA (Num n):ts) q
 sr (BSym b:ts) q = sr (PB (Const b):ts) q
 
-sr (PA y:BOp AddOp:PA x:ts) q = sr (PA (Add x y):ts) q 
-sr (PA y:BOp SubOp:PA x:ts) q = sr (PA (Sub x y):ts) q
-sr (PA y:BOp MulOp:PA x:ts) q = sr (PA (Mul x y):ts) q 
-sr (PA y:BOp DivOp:PA x:ts) q = sr (PA (Div x y):ts) q 
-sr (PA y:BOp ModOp:PA x:ts) q = sr (PA (Mod x y):ts) q 
-sr (PA y:BOp ExpOp:PA x:ts) q = sr (PA (Exp x y):ts) q 
+-- Reduce arithmetic expressions
+sr (PA y:BOp op:PA x:ts) q | op `elem` [AddOp, SubOp, MulOp, DivOp, ModOp, ExpOp] =
+    sr (PA (handleArithOp op x y):ts) q
 
-sr (PB y:BOp AndOp:PB x:ts) q = sr (PB (And x y):ts) q 
-sr (PB y:BOp OrOp:PB x:ts) q = sr (PB (Or x y):ts) q 
-sr (PA y:BOp EqOp:PA x:ts) q = sr (PB (Eq x y):ts) q 
-sr (PA y:BOp NeqOp:PA x:ts) q = sr (PB (Neq x y):ts) q 
-sr (PA y:BOp LtOp:PA x:ts) q = sr (PB (Lt x y):ts) q 
-sr (PA y:BOp LteOp:PA x:ts) q = sr (PB (Lte x y):ts) q
-sr (PA y:BOp GtOp:PA x:ts) q = sr (PB (Gt x y):ts) q 
-sr (PA y:BOp GteOp:PA x:ts) q = sr (PB (Gte x y):ts) q
+-- Reduce boolean expressions
+sr (PA y:BOp op:PA x:ts) q | op `elem` [EqOp, NeqOp, LtOp, LteOp, GtOp, GteOp] =
+    sr (PB (handleBoolOp op x y):ts) q
 
-sr (Semi:PA y:AssignOp:PA (Var x):ts) q = sr (PI (Assign x y):ts) q
-sr (LBra:PB b:Keyword WhileK:ts) q = sr (PI (Do []):PB b:Keyword WhileK:ts) q
-sr (PI i:PI (Do is):ts) q =  sr (PI (Do (i:is)):ts) q
-sr (RBra:PI (Do is):ts) q = sr (PI (Do is):ts) q
-sr (PI i:PB b:Keyword WhileK:ts) q = sr (PI (While b i):ts) q
+-- Reduce logical expressions
+sr (PB y:BOp op:PB x:ts) q | op `elem` [AndOp, OrOp] =
+    sr (PB (if op == AndOp then And x y else Or x y):ts) q
 
-sr s (q:qs) = sr (q:s) qs
+-- Reduce assignment
+sr (Semi:PA e:AssignOp:PA (Var v):ts) q = sr (PI (Assign v e):ts) q
+
+-- Reduce return statement
+sr (Semi:PA e:Keyword ReturnK:ts) q = sr (PI (Return e):ts) q
+
+-- Reduce IfThen
+sr (PI instr : Keyword ThenK : PB cond : Keyword IfK : ts) q = sr (PI (IfThen cond instr) : ts) q
+
+-- Reduce IfThenElse (if implemented)
+-- sr (PI instr2 : Keyword ElseK : PI instr1 : Keyword ThenK : PB cond : Keyword IfK : ts) q =
+--     sr (PI (IfThenElse cond instr1 instr2) : ts) q
+
+-- Reduce While
+sr (PI instr : PB cond : Keyword WhileK : ts) q = sr (PI (While cond instr) : ts) q
+
+-- Reduce expressions inside parentheses
+sr (RPar : PA e : LPar : ts) q = sr (PA e : ts) q
+sr (RPar : PB b : LPar : ts) q = sr (PB b : ts) q
+
+-- Shift tokens onto the stack
+sr stack (q:qs) = sr (q:stack) qs
 sr stack [] = reverse stack
+
 
 
 -- Handle keywords
