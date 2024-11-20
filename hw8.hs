@@ -131,9 +131,17 @@ evalb env (Neq e1 e2) = evala env e1 /= evala env e2
 evalb env (Gt e1 e2) = evala env e1 > evala env e2
 evalb env (Gte e1 e2) = evala env e1 >= evala env e2
 
+-- Helper function to update variables in the environment
+updateEnv :: Vars -> Value -> Env -> Env
+updateEnv var val [] = [(var, val)]
+updateEnv var val ((v, val'):env)
+    | v == var  = (v, val) : env
+    | otherwise = (v, val') : updateEnv var val env
+
+
 -- Execute a single instruction
 exec :: Instr -> Env -> Env
-exec (Assign var expr) env = (var, evala env expr) : env
+exec (Assign var expr) env = updateEnv var (evala env expr) env
 exec (IfThen cond instr) env = 
     if evalb env cond 
     then exec instr env 
@@ -161,45 +169,54 @@ prec AddOp = 10
 -- Shift-reduce parser
 sr :: [Token] -> [Token] -> [Token]
 -- Base cases for reducing variables and constants
-sr (VSym v:ts) q = sr (PA (Var v):ts) q
-sr (CSym n:ts) q = sr (PA (Num n):ts) q
-sr (BSym b:ts) q = sr (PB (Const b):ts) q
+sr (VSym v:stack) ts = sr (PA (Var v):stack) ts
+sr (CSym n:stack) ts = sr (PA (Num n):stack) ts
+sr (BSym b:stack) ts = sr (PB (Const b):stack) ts
 
 -- Reduce arithmetic expressions
-sr (PA y:BOp op:PA x:ts) q | op `elem` [AddOp, SubOp, MulOp, DivOp, ModOp, ExpOp] =
-    sr (PA (handleArithOp op x y):ts) q
+sr (PA y:BOp op:PA x:stack) ts | op `elem` [AddOp, SubOp, MulOp, DivOp, ModOp, ExpOp] =
+    sr (PA (handleArithOp op x y):stack) ts
 
 -- Reduce boolean expressions
-sr (PA y:BOp op:PA x:ts) q | op `elem` [EqOp, NeqOp, LtOp, LteOp, GtOp, GteOp] =
-    sr (PB (handleBoolOp op x y):ts) q
+sr (PA y:BOp op:PA x:stack) ts | op `elem` [EqOp, NeqOp, LtOp, LteOp, GtOp, GteOp] =
+    sr (PB (handleBoolOp op x y):stack) ts
 
 -- Reduce logical expressions
-sr (PB y:BOp op:PB x:ts) q | op `elem` [AndOp, OrOp] =
-    sr (PB (if op == AndOp then And x y else Or x y):ts) q
+sr (PB y:BOp op:PB x:stack) ts | op `elem` [AndOp, OrOp] =
+    sr (PB (if op == AndOp then And x y else Or x y):stack) ts
+
+-- Reduce Not expressions
+sr (PB b : NotOp : stack) ts = sr (PB (Not b) : stack) ts
 
 -- Reduce assignment
-sr (Semi:PA e:AssignOp:PA (Var v):ts) q = sr (PI (Assign v e):ts) q
+sr (Semi:PA e:AssignOp:PA (Var v):stack) ts = sr (PI (Assign v e):stack) ts
 
 -- Reduce return statement
-sr (Semi:PA e:Keyword ReturnK:ts) q = sr (PI (Return e):ts) q
+sr (Semi:PA e:Keyword ReturnK:stack) ts = sr (PI (Return e):stack) ts
 
 -- Reduce IfThen
-sr (PI instr : Keyword ThenK : PB cond : Keyword IfK : ts) q = sr (PI (IfThen cond instr) : ts) q
+sr (PI instr : Keyword ThenK : PB cond : Keyword IfK : stack) ts = sr (PI (IfThen cond instr) : stack) ts
 
--- Reduce IfThenElse (if implemented)
--- sr (PI instr2 : Keyword ElseK : PI instr1 : Keyword ThenK : PB cond : Keyword IfK : ts) q =
---     sr (PI (IfThenElse cond instr1 instr2) : ts) q
+-- Reduce While with body
+sr (PI instr : PB cond : Keyword WhileK : stack) ts = sr (PI (While cond instr) : stack) ts
 
--- Reduce While
-sr (PI instr : PB cond : Keyword WhileK : ts) q = sr (PI (While cond instr) : ts) q
+-- Reduce While with no body
+sr (PB cond : Keyword WhileK : stack) ts = sr (PI (While cond Nop) : stack) ts
 
 -- Reduce expressions inside parentheses
-sr (RPar : PA e : LPar : ts) q = sr (PA e : ts) q
-sr (RPar : PB b : LPar : ts) q = sr (PB b : ts) q
+sr (RPar : PA e : LPar : stack) ts = sr (PA e : stack) ts
+sr (RPar : PB b : LPar : stack) ts = sr (PB b : stack) ts
+
+-- Reduce code blocks into Do
+sr (RBra : stack) ts = 
+    let (blockTokens, rest) = break (== LBra) stack
+        instrs = parseInstructions (reverse blockTokens)
+    in sr (PI (Do instrs) : tail rest) ts  -- Use 'tail' to remove the LBra
 
 -- Shift tokens onto the stack
-sr stack (q:qs) = sr (q:stack) qs
-sr stack [] = reverse stack
+sr stack (t:ts) = sr (t:stack) ts
+sr stack [] = stack
+
 
 
 
@@ -305,15 +322,15 @@ handleRBra stack ts = sr stack ts
 readProg :: [Token] -> Either [Instr] String
 readProg tokens = case sr [] tokens of
     [PI i] -> Left [i]
-    pis@(PI _ : _) -> Left (map (\(PI i) -> i) pis)
-    [PB b, Keyword WhileK] -> Right $ "Parse error: incomplete while loop"
-    stack -> Right $ "Parse error: " ++ show stack
+    pis@(PI _ : _) -> Left (map (\(PI i) -> i) (reverse pis))
+    _ -> Right $ "Parse error: " ++ show tokens
+
 
 -- Helper function to parse instructions
 parseInstructions :: [Token] -> [Instr]
 parseInstructions tokens = 
     case sr [] tokens of
-        pis@(PI _ : _) -> map (\(PI i) -> i) (reverse pis)
+        pis@(PI _ : _) -> map (\(PI i) -> i) pis
         _ -> []
 
 
