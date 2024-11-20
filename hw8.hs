@@ -218,7 +218,6 @@ sr stack ts =
                 (t:ts') -> sr (t:stack) ts'
                 []      -> stack
 
--- Updated reduce function
 reduce :: [Token] -> [Token] -> Maybe [Token]
 -- Base cases for reducing variables and constants
 reduce (VSym v:stack) _ = Just (PA (Var v):stack)
@@ -300,7 +299,6 @@ handleBoolOp GtOp a b = Gt a b
 handleBoolOp GteOp a b = Gte a b
 handleBoolOp _ _ _ = error "Invalid boolean operation"
 
--- Program reader
 readProg :: [Token] -> Either [Instr] String
 readProg tokens =
     let stack = sr [] tokens
@@ -316,18 +314,17 @@ readProg tokens =
     isValidInstr :: Instr -> Bool
     isValidInstr (While _ Nop) = False
     isValidInstr _             = True
--- Helper function to parse instructions
+
 parseInstructions :: [Token] -> [Instr]
 parseInstructions tokens =
     case sr [] tokens of
         pis@(PI _ : _) -> reverse (map (\(PI i) -> i) pis)
         _ -> []
 
--- The rest of your code remains the same...
 
 
 
--- TESTS BELOW DO NOT MODIFY BELOW THIS LINE
+-- TESTS
 env1 :: Env
 env1 = [("sum",10), ("y",3), ("i",5), ("acc",1),("c",3),("n",2)]
 env2 :: Env
