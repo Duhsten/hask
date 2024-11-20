@@ -101,6 +101,35 @@ lexer (x:xs) | elem x " \t\n" = lexer xs
 lexer "" = []
 lexer xs = [Err (take 10 xs)]
 
+
+precedence :: BOps -> Int
+precedence op = case op of
+    ExpOp -> 4
+    MulOp -> 3
+    DivOp -> 3
+    ModOp -> 3
+    AddOp -> 2
+    SubOp -> 2
+    EqOp  -> 1
+    NeqOp -> 1
+    LtOp  -> 1
+    LteOp -> 1
+    GtOp  -> 1
+    GteOp -> 1
+    AndOp -> 0
+    OrOp  -> 0
+
+
+
+
+-- Helper for logical operations
+handleLogicOp :: BOps -> BExpr -> BExpr -> BExpr
+handleLogicOp op a b = case op of
+    AndOp -> And a b
+    OrOp  -> Or a b
+    _     -> error "Invalid logical operation"
+
+
 -- Helper function to lookup variables in environment
 lookupVar :: Vars -> Env -> Value
 lookupVar v env = case lookup v env of
@@ -166,96 +195,90 @@ execList (i:is) env = execList is (exec i env)
 prec :: BOps -> Int
 prec AddOp = 10
 
--- Shift-reduce parser
+-- Helper functions
+isBOp :: Token -> Bool
+isBOp (BOp _) = True
+isBOp _ = False
+
+getOp :: Token -> BOps
+getOp (BOp op) = op
+getOp _ = error "Expected a binary operator"
+
+nextPrecedence :: [Token] -> Int
+nextPrecedence (t:_) | isBOp t = precedence (getOp t)
+nextPrecedence _ = -1  -- Lowest precedence
+
+-- Shift-reduce parser with operator precedence
 sr :: [Token] -> [Token] -> [Token]
+sr stack ts =
+    case reduce stack ts of
+        Just newStack -> sr newStack ts
+        Nothing ->
+            case ts of
+                (t:ts') -> sr (t:stack) ts'
+                []      -> stack
+
+-- Updated reduce function
+reduce :: [Token] -> [Token] -> Maybe [Token]
 -- Base cases for reducing variables and constants
-sr (VSym v:stack) ts = sr (PA (Var v):stack) ts
-sr (CSym n:stack) ts = sr (PA (Num n):stack) ts
-sr (BSym b:stack) ts = sr (PB (Const b):stack) ts
+reduce (VSym v:stack) _ = Just (PA (Var v):stack)
+reduce (CSym n:stack) _ = Just (PA (Num n):stack)
+reduce (BSym b:stack) _ = Just (PB (Const b):stack)
 
 -- Reduce arithmetic expressions
-sr (PA y:BOp op:PA x:stack) ts | op `elem` [AddOp, SubOp, MulOp, DivOp, ModOp, ExpOp] =
-    sr (PA (handleArithOp op x y):stack) ts
+reduce (PA y:BOp op1:PA x:stack) ts
+    | nextPrecedence ts > precedence op1 = Nothing  -- Shift
+    | op1 `elem` [AddOp, SubOp, MulOp, DivOp, ModOp, ExpOp] =
+        Just (PA (handleArithOp op1 x y):stack)
+    | op1 `elem` [EqOp, NeqOp, LtOp, LteOp, GtOp, GteOp] =
+        Just (PB (handleBoolOp op1 x y):stack)
+    | otherwise = Nothing
 
 -- Reduce boolean expressions
-sr (PA y:BOp op:PA x:stack) ts | op `elem` [EqOp, NeqOp, LtOp, LteOp, GtOp, GteOp] =
-    sr (PB (handleBoolOp op x y):stack) ts
-
--- Reduce logical expressions
-sr (PB y:BOp op:PB x:stack) ts | op `elem` [AndOp, OrOp] =
-    sr (PB (if op == AndOp then And x y else Or x y):stack) ts
+reduce (PB y:BOp op1:PB x:stack) ts
+    | nextPrecedence ts > precedence op1 = Nothing  -- Shift
+    | op1 `elem` [AndOp, OrOp] =
+        Just (PB (handleLogicOp op1 x y):stack)
+    | otherwise = Nothing
 
 -- Reduce Not expressions
-sr (PB b : NotOp : stack) ts = sr (PB (Not b) : stack) ts
+reduce (PB b : NotOp : stack) _ = Just (PB (Not b) : stack)
 
 -- Reduce assignment
-sr (Semi:PA e:AssignOp:PA (Var v):stack) ts = sr (PI (Assign v e):stack) ts
+reduce (Semi:PA e:AssignOp:PA (Var v):stack) _ = Just (PI (Assign v e):stack)
 
 -- Reduce return statement
-sr (Semi:PA e:Keyword ReturnK:stack) ts = sr (PI (Return e):stack) ts
+reduce (Semi:PA e:Keyword ReturnK:stack) _ = Just (PI (Return e):stack)
 
 -- Reduce IfThen
-sr (PI instr : Keyword ThenK : PB cond : Keyword IfK : stack) ts = sr (PI (IfThen cond instr) : stack) ts
+reduce (PI instr : Keyword ThenK : PB cond : Keyword IfK : stack) _ =
+    Just (PI (IfThen cond instr) : stack)
+
+-- Reduce IfThenElse
+reduce (PI elseInstr : Keyword ElseK : PI thenInstr : Keyword ThenK : PB cond : Keyword IfK : stack) _ =
+    Just (PI (IfThenElse cond thenInstr elseInstr) : stack)
 
 -- Reduce While with body
-sr (PI instr : PB cond : Keyword WhileK : stack) ts = sr (PI (While cond instr) : stack) ts
+reduce (PI instr : PB cond : Keyword WhileK : stack) _ =
+    Just (PI (While cond instr) : stack)
 
--- Reduce While with no body
-sr (PB cond : Keyword WhileK : stack) ts = sr (PI (While cond Nop) : stack) ts
+-- Do not reduce While without a body
+reduce (PB _ : Keyword WhileK : _) _ = Nothing
 
 -- Reduce expressions inside parentheses
-sr (RPar : PA e : LPar : stack) ts = sr (PA e : stack) ts
-sr (RPar : PB b : LPar : stack) ts = sr (PB b : stack) ts
+reduce (RPar : PA e : LPar : stack) _ = Just (PA e : stack)
+reduce (RPar : PB b : LPar : stack) _ = Just (PB b : stack)
 
 -- Reduce code blocks into Do
-sr (RBra : stack) ts = 
-    let (blockTokens, rest) = break (== LBra) stack
+reduce (RBra : tokens) ts =
+    let (blockTokens, rest) = span (/= LBra) tokens
         instrs = parseInstructions (reverse blockTokens)
-    in sr (PI (Do instrs) : tail rest) ts  -- Use 'tail' to remove the LBra
+    in case rest of
+        (LBra : stack) -> Just (PI (Do instrs) : stack)
+        _              -> Nothing
 
--- Shift tokens onto the stack
-sr stack (t:ts) = sr (t:stack) ts
-sr stack [] = stack
+reduce _ _ = Nothing  -- No reduction possible
 
-
-
-
--- Handle keywords
-handleKeyword :: Keywords -> [Token] -> [Token] -> [Token]
-handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PB cond : LPar : Keyword IfK : stack) ts =
-    sr (PI (IfThen cond (Return e)) : stack) ts
-handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PA e2 : BOp op : PA e1 : LPar : Keyword IfK : stack) ts =
-    sr (PI (IfThen (handleBoolOp op e1 e2) (Return e)) : stack) ts
-handleKeyword ThenK (PA e : Keyword ReturnK : RPar : PA e2 : BOp op2 : PA e1 : BOp op1 : VSym v : LPar : Keyword IfK : stack) ts =
-    sr (PI (IfThen (handleBoolOp op2 (handleArithOp op1 (Var v) e1) e2) (Return e)) : stack) ts
-handleKeyword WhileK stack ts = sr (Keyword WhileK : stack) ts
-handleKeyword k stack ts = sr (Keyword k : stack) ts
-
--- Handle binary operators
-handleBOp :: BOps -> [Token] -> [Token] -> [Token]
-handleBOp op (e2:e1:stack) ts = case (e1, e2) of
-    (PA a, PA b) -> case op of
-        AddOp -> sr (PA (Add a b) : stack) ts
-        SubOp -> sr (PA (Sub a b) : stack) ts
-        MulOp -> sr (PA (Mul a b) : stack) ts
-        DivOp -> sr (PA (Div a b) : stack) ts
-        ModOp -> sr (PA (Mod a b) : stack) ts
-        ExpOp -> sr (PA (Exp a b) : stack) ts
-        EqOp -> sr (PB (Eq a b) : stack) ts
-        LtOp -> sr (PB (Lt a b) : stack) ts
-        LteOp -> sr (PB (Lte a b) : stack) ts
-        GtOp -> sr (PB (Gt a b) : stack) ts
-        GteOp -> sr (PB (Gte a b) : stack) ts
-        NeqOp -> sr (PB (Neq a b) : stack) ts
-    (VSym v, PA e) -> handleBOp op (PA (Var v) : PA e : stack) ts
-    (PA e, VSym v) -> handleBOp op (PA (Var v) : PA e : stack) ts
-    (VSym v1, VSym v2) -> handleBOp op (PA (Var v2) : PA (Var v1) : stack) ts
-    (PB b1, PB b2) -> case op of
-        AndOp -> sr (PB (And b1 b2) : stack) ts
-        OrOp -> sr (PB (Or b1 b2) : stack) ts
-        _ -> sr (e2 : e1 : BOp op : stack) ts
-    _ -> sr (e2 : e1 : BOp op : stack) ts
-handleBOp op stack ts = sr (BOp op : stack) ts
 
 -- Helper for arithmetic operations
 handleArithOp :: BOps -> AExpr -> AExpr -> AExpr
@@ -265,73 +288,42 @@ handleArithOp MulOp a b = Mul a b
 handleArithOp DivOp a b = Div a b
 handleArithOp ModOp a b = Mod a b
 handleArithOp ExpOp a b = Exp a b
-handleArithOp EqOp a b = error "Should not reach here"
-handleArithOp _ a b = error "Invalid arithmetic operation"
-
--- Handle semicolon
-handleSemi :: [Token] -> [Token] -> [Token]
-handleSemi (PA e : AssignOp : VSym v : stack) ts = 
-    sr (PI (Assign v e) : stack) ts
-handleSemi (VSym v2 : AssignOp : VSym v1 : stack) ts = 
-    sr (PI (Assign v1 (Var v2)) : stack) ts
-handleSemi (PA e : Keyword ReturnK : stack) ts = 
-    sr (PI (Return e) : stack) ts
-handleSemi (VSym v : Keyword ReturnK : stack) ts = 
-    sr (PI (Return (Var v)) : stack) ts
-handleSemi stack ts = sr stack ts
-
--- Handle right parenthesis
-handleRPar :: [Token] -> [Token] -> [Token]
-handleRPar (RPar : PB b : LPar : stack) ts = sr (PB b : stack) ts
-handleRPar (RPar : PA e2 : BOp op : PA e1 : LPar : stack) ts = 
-    sr (PB (handleBoolOp op e1 e2) : stack) ts
-handleRPar (RPar : PA e2 : BOp op2 : PA e1 : BOp op1 : VSym v : LPar : stack) ts =
-    sr (PB (handleBoolOp op2 (handleArithOp op1 (Var v) e1) e2) : stack) ts
-handleRPar (RPar : VSym v2 : BOp op : VSym v1 : LPar : stack) ts = 
-    sr (PB (handleBoolOp op (Var v1) (Var v2)) : stack) ts
-handleRPar (RPar : PA e2 : BOp op : VSym v : LPar : stack) ts = 
-    sr (PB (handleBoolOp op (Var v) e2) : stack) ts
-handleRPar stack ts = sr stack ts
+handleArithOp _ _ _ = error "Invalid arithmetic operation"
 
 -- Helper for boolean operations
 handleBoolOp :: BOps -> AExpr -> AExpr -> BExpr
 handleBoolOp EqOp a b = Eq a b
+handleBoolOp NeqOp a b = Neq a b
 handleBoolOp LtOp a b = Lt a b
 handleBoolOp LteOp a b = Lte a b
 handleBoolOp GtOp a b = Gt a b
 handleBoolOp GteOp a b = Gte a b
-handleBoolOp NeqOp a b = Neq a b
 handleBoolOp _ _ _ = error "Invalid boolean operation"
-
--- Handle right brace
-handleRBra :: [Token] -> [Token] -> [Token]
-handleRBra (RBra : rest) ts = 
-    let (blockTokens, remainingStack) = span (/= LBra) rest
-        instructions = case sr [] (reverse blockTokens) of
-            pis@(PI _ : _) -> map (\(PI i) -> i) pis
-            _ -> []
-    in case remainingStack of
-        (LBra : PB cond : Keyword WhileK : stack) -> 
-            sr (PI (While cond (Do instructions)) : stack) ts
-        (LBra : PB cond : NotOp : Keyword WhileK : stack) -> 
-            sr (PI (While (Not cond) (Do instructions)) : stack) ts
-        _ -> sr (Block instructions : remainingStack) ts
-handleRBra stack ts = sr stack ts
 
 -- Program reader
 readProg :: [Token] -> Either [Instr] String
-readProg tokens = case sr [] tokens of
-    [PI i] -> Left [i]
-    pis@(PI _ : _) -> Left (map (\(PI i) -> i) (reverse pis))
-    _ -> Right $ "Parse error: " ++ show tokens
-
-
+readProg tokens =
+    let stack = sr [] tokens
+    in case stack of
+        [PI i] ->
+            if isValidInstr i then Left [i] else parseError stack
+        pis@(PI _ : _) ->
+            let instrs = reverse (map (\(PI i) -> i) pis)
+            in if all isValidInstr instrs then Left instrs else parseError stack
+        _ -> parseError stack
+  where
+    parseError stk = Right $ "Parse error: " ++ show stk
+    isValidInstr :: Instr -> Bool
+    isValidInstr (While _ Nop) = False
+    isValidInstr _             = True
 -- Helper function to parse instructions
 parseInstructions :: [Token] -> [Instr]
-parseInstructions tokens = 
+parseInstructions tokens =
     case sr [] tokens of
-        pis@(PI _ : _) -> map (\(PI i) -> i) pis
+        pis@(PI _ : _) -> reverse (map (\(PI i) -> i) pis)
         _ -> []
+
+-- The rest of your code remains the same...
 
 
 
