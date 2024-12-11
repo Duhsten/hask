@@ -22,6 +22,7 @@ data Token = VSym Vars | Backslash | Dot | LPar | RPar | USym
            | TTT | FFF | IfT | ThenT | ElseT
            | PairT | FstT | SndT | Comma
            | NumT Int | PlusT | LteT
+           | IfThenElseT
            | PT Terms | Err String
   deriving (Show,Eq)
 
@@ -42,12 +43,13 @@ lexer ('(':')':xs) = USym : lexer xs
 lexer ('[':']':xs) = NilT : lexer xs
 lexer ('@':xs) = ConsT : lexer xs
 lexer ('f':'o':'l':'d':xs) = FoldT : lexer xs
-lexer ('.' :xs) = Dot  : lexer xs
+lexer ('.' :xs) = Dot  : lexer xs
 lexer ('\\':xs) = Backslash : lexer xs
 lexer ('(' :xs) = LPar : lexer xs
 lexer (')' :xs) = RPar : lexer xs
 lexer ('t':'t':xs) = TTT : lexer xs
 lexer ('f':'f':xs) = FFF : lexer xs
+lexer ('I':'f':'T':'h':'e':'n':'E':'l':'s':'e':xs) = IfThenElseT : lexer xs
 lexer ('i':'f':xs) = IfT : lexer xs
 lexer ('t':'h':'e':'n':xs) = ThenT : lexer xs
 lexer ('e':'l':'s':'e':xs) = ElseT : lexer xs
@@ -56,16 +58,13 @@ lexer ('f':'s':'t':xs) = FstT : lexer xs
 lexer ('s':'n':'d':xs) = SndT : lexer xs
 lexer ('+':xs) = PlusT : lexer xs
 lexer ('≤':xs) = LteT : lexer xs
+lexer (',':xs) = Comma : lexer xs
 lexer (x:xs) | isDigit x = 
   let (num,rest) = span isDigit (x:xs)
   in NumT (read num) : lexer rest
 lexer (x : xs) | isSpace x = lexer xs
 lexer (x : xs) | isAlpha x = VSym (x : takeWhile isAlphaNum xs)
                               : lexer (dropWhile isAlphaNum xs)
--- alternative variable handler
--- lexer (x:xs) | isAlpha x = VSym var : lexer rest
---     where (var,rest) = span isAlphaNum (x:xs)
-lexer (',':xs) = Comma : lexer xs
 lexer xs = [Err (drop 10 xs)]
 
 -- 3. Parser
@@ -98,7 +97,9 @@ sr (PT t3 : PT t2 : PT t1 : FoldT : s) q = sr (PT (Fold t1 t2 t3) : s) q
 sr (TTT : s) q = sr (PT TT : s) q
 sr (FFF : s) q = sr (PT FF : s) q
 -- If-Then-Else
-sr (PT e3 : ElseT : PT e2 : ThenT : PT e1 : IfT : s) q = 
+sr (RPar : PT e3 : Comma : PT e2 : Dot : VSym x : Backslash : Comma : PT e1 : LPar : IfThenElseT : s) q = 
+  sr (PT (IfThenElse e1 (Abs x e2) e3) : s) q
+sr (RPar : PT e3 : Comma : PT e2 : Comma : PT e1 : LPar : IfThenElseT : s) q = 
   sr (PT (IfThenElse e1 e2 e3) : s) q
 -- Pairs
 sr (RPar : PT t2 : PT t1 : LPar : s) q = sr (PT (Pair t1 t2) : s) q
@@ -371,7 +372,8 @@ tests = [
   "\\x.\\y.\\z.((x z), (y z))",
   "\\p.\\f.f (snd p) (fst p)",
   "(tt, \\x.x(ff))",
-  "IfThenElse (tt, \\x.x, \\y.ff)"
+  "IfThenElse (tt, \\x.x, \\y.ff)",
+  "\\x.\\y.y(IfThenElse(x, tt, y x))"
   ]
 
 -- Main function to run all tests
