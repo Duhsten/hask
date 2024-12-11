@@ -15,6 +15,10 @@ data Terms = Var Vars | App Terms Terms | Abs Vars Terms | UT
            | TT | FF | IfThenElse Terms Terms Terms
            | Pair Terms Terms | Fst Terms | Snd Terms
            | Num Int | Add Terms Terms | Lte Terms Terms
+           | IsPos Terms    -- Add IsPos
+           | Sub Terms Terms -- Add subtraction
+           | Y              -- Add Y-combinator
+           | Mul Terms Terms
   deriving (Show,Eq)
 
 data Token = VSym Vars | Backslash | Dot | LPar | RPar | USym
@@ -22,8 +26,10 @@ data Token = VSym Vars | Backslash | Dot | LPar | RPar | USym
            | TTT | FFF | IfT | ThenT | ElseT
            | PairT | FstT | SndT | Comma
            | NumT Int | PlusT | LteT
-           | IfThenElseT
+           | IsPosT | SubT | YT    -- Add new tokens
+           | IfThenElseT           -- Add this token
            | PT Terms | Err String
+           | MulT
   deriving (Show,Eq)
 
 instance Show Types where
@@ -50,16 +56,23 @@ lexer (')' :xs) = RPar : lexer xs
 lexer ('t':'t':xs) = TTT : lexer xs
 lexer ('f':'f':xs) = FFF : lexer xs
 lexer ('I':'f':'T':'h':'e':'n':'E':'l':'s':'e':xs) = IfThenElseT : lexer xs
+lexer ('I':'s':'P':'o':'s':xs) = IsPosT : lexer xs
 lexer ('i':'f':xs) = IfT : lexer xs
 lexer ('t':'h':'e':'n':xs) = ThenT : lexer xs
 lexer ('e':'l':'s':'e':xs) = ElseT : lexer xs
 lexer ('p':'a':'i':'r':xs) = PairT : lexer xs
 lexer ('f':'s':'t':xs) = FstT : lexer xs
 lexer ('s':'n':'d':xs) = SndT : lexer xs
+lexer ('Y':xs) = YT : lexer xs
 lexer ('+':xs) = PlusT : lexer xs
 lexer ('≤':xs) = LteT : lexer xs
 lexer ('<':'=':xs) = LteT : lexer xs
+lexer ('-':xs) = SubT : lexer xs
+lexer ('*':xs) = MulT : lexer xs
 lexer (',':xs) = Comma : lexer xs
+lexer (x:xs) | x == '-' && isDigit (head xs) = 
+  let (num,rest) = span isDigit xs
+  in NumT (-(read num)) : lexer rest
 lexer (x:xs) | isDigit x = 
   let (num,rest) = span isDigit (x:xs)
   in NumT (read num) : lexer rest
@@ -117,8 +130,16 @@ sr (RPar : PT t2 : Comma : PT t1 : LPar : s) q = sr (PT (Pair t1 t2) : s) q
 sr (NumT n : s) q = sr (PT (Num n) : s) q
 sr (PT t2 : PlusT : PT t1 : s) q = sr (PT (Add t1 t2) : s) q
 sr (PT t2 : LteT : PT t1 : s) q = sr (PT (Lte t1 t2) : s) q
--- Parentheses
+sr (PT t2 : SubT : PT t1 : s) q = sr (PT (Sub t1 t2) : s) q
+sr (PT t2 : MulT : PT t1 : s) q = sr (PT (Mul t1 t2) : s) q
+
+-- IsPos (move before parentheses rules)
+sr (RPar : PT (Num n) : SubT : LPar : IsPosT : s) q = sr (PT (IsPos (Num (-n))) : s) q
+sr (RPar : PT t : LPar : IsPosT : s) q = sr (PT (IsPos t) : s) q
+
+-- Parentheses (general case)
 sr (RPar : PT t : LPar : s) q = sr (PT t : s) q
+
 -- Application
 sr (PT t2 : PT t1 : s) q = sr (PT (App t1 t2) : s) q
 -- Abstraction
@@ -260,6 +281,15 @@ genConstrs gamma (Add s t) a =
   [(a,Int)] ++ genConstrs gamma s Int ++ genConstrs gamma t Int
 genConstrs gamma (Lte s t) a =
   [(a,Bool)] ++ genConstrs gamma s Int ++ genConstrs gamma t Int
+genConstrs gamma (IsPos t) a = 
+  [(a,Bool)] ++ genConstrs gamma t Int
+genConstrs gamma (Sub s t) a = 
+  [(a,Int)] ++ genConstrs gamma s Int ++ genConstrs gamma t Int
+genConstrs gamma Y a =
+  let a1 = freshVar (getTVars a)
+  in [(a, Fun (Fun (TVar a1) (TVar a1)) (TVar a1))]
+genConstrs gamma (Mul s t) a = 
+  [(a,Int)] ++ genConstrs gamma s Int ++ genConstrs gamma t Int
 
 -- Solve the list of constraints
 unify :: [Constr] -> TSub
@@ -321,28 +351,43 @@ subst xt (Add s t) = Add (subst xt s) (subst xt t)
 subst xt (Lte s t) = Lte (subst xt s) (subst xt t)
 
 red :: Terms -> Terms
--- Rewrite rules
-red (App (Abs x s) t) = subst (x,t) s
+-- Rewrite rules (Introduction/Elimination interactions)
+red (App (Abs x s) t) = subst (x,t) s                    -- (1) Beta reduction
+red (Fst (Pair s t)) = s                                 -- (2) Pair projection
+red (Snd (Pair s t)) = t                                 -- (3) Pair projection
+red (IfThenElse TT t _) = t                             -- (4) If-true
+red (IfThenElse FF _ e) = e                             -- (5) If-false
+red (Add (Num n1) (Num n2)) = Num (n1 + n2)            -- (6) Integer arithmetic
+red (Sub (Num n1) (Num n2)) = Num (n1 - n2)            -- Integer arithmetic
+red (Mul (Num n1) (Num n2)) = Num (n1 * n2)            -- Integer arithmetic
+red (Lte (Num n1) (Num n2)) = if n1 <= n2 then TT else FF  -- Integer comparison
+red (IsPos (Num n)) = if n > 0 then TT else FF         -- (7) Integer predicate
+red (App Y t) = App t (App Y t)                        -- (8) Y-combinator
+
+-- List operations
 red (Fold s t Nil) = t
 red (Fold s t (Cons h r)) = App (App s h) (Fold s t r)
-red (Fst (Pair s t)) = s
-red (Snd (Pair s t)) = t
-red (IfThenElse TT t _) = t
-red (IfThenElse FF _ e) = e
-red (Add (Num n1) (Num n2)) = Num (n1 + n2)  -- Move numeric evaluation rules
-red (Lte (Num n1) (Num n2)) = if n1 <= n2 then TT else FF  -- up here
--- Congruence rules
-red (Fold s t u) = Fold (red s) (red t) (red u)
-red (Cons s t) = Cons (red s) (red t)
+
+-- Congruence rules (Reduction under context)
 red (App s t) = App (red s) (red t)
 red (Abs x r) = Abs x (red r)
 red (Pair s t) = Pair (red s) (red t)
 red (Fst t) = Fst (red t)
 red (Snd t) = Snd (red t)
 red (IfThenElse c t e) = IfThenElse (red c) (red t) (red e)
-red (Add s t) = Add (red s) (red t)  -- General Add case after specific case
-red (Lte s t) = Lte (red s) (red t)  -- General Lte case after specific case
--- Base case
+red (Add s t) = Add (red s) (red t)
+red (Sub s t) = Sub (red s) (red t)
+red (Mul s t) = Mul (red s) (red t)
+red (Lte s t) = Lte (red s) (red t)
+red (IsPos t) = IsPos (red t)
+red (Fold s t u) = Fold (red s) (red t) (red u)
+red (Cons s t) = Cons (red s) (red t)
+
+-- Base cases (Already in normal form)
+red Y = Y
+red (Num n) = Num n
+red TT = TT
+red FF = FF
 red t = t
 
 
@@ -374,7 +419,11 @@ tests = [
   "1",
   "\\x.x + 1",
   "\\x.\\y.IfThenElse(x <= y, x, y)",
-  "\\x.\\y.x(fst y) + snd y"
+  "\\x.\\y.x(fst y) + snd y",
+  "IsPos(1)",
+  "IsPos(-1)",
+  "\\x.IsPos(x)",
+  "\\x.\\y.x - y"
   ]
 
 -- Main function to run all tests
