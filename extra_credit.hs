@@ -8,15 +8,25 @@ type TVars = String
 type  Vars = String
 
 data Types = TVar TVars | Fun Types Types | Unit | List Types
-  deriving (Eq)
+          | Prod Types Types | Bool | Ints  -- Added Ints type
+          deriving (Eq)
 data Terms = Var Vars | App Terms Terms | Abs Vars Terms | UT
            | Nil | Cons Terms Terms | Fold Terms Terms Terms
-  deriving (Show,Eq)
+           | Pair Terms Terms      -- New: Pairs
+           | Fst Terms            -- New: First projection
+           | Snd Terms            -- New: Second projection
+           | TT | FF              -- New: Boolean constants
+           | IfThenElse Terms Terms Terms  -- New: If-then-else
+           | IsPos Terms          -- New: IsPositive test
+           | Y                    -- New: Y combinator
+           | Num Integer          -- New: Explicit number constructor
+           deriving (Show,Eq)
 
 data Token = VSym Vars | Backslash | Dot | LPar | RPar | USym
            | NilT | ConsT | FoldT -- New tokens for working with lists
            | PT Terms | Err String
            | EqSym | LoadT | QuitT | TypeT
+           | Comma  -- Add comma token
   deriving (Show,Eq)
 
 instance Show Types where
@@ -26,6 +36,9 @@ instance Show Types where
   -- show (Fun t1 t2) = "(" ++ show t1 ++ " -> " ++ show t2 ++ ")"
   show (Fun t1@(Fun _ _) t2) = "(" ++ show t1 ++ ")" ++ " -> " ++ show t2
   show (Fun t1 t2) = show t1 ++ " -> " ++ show t2
+  show (Prod a b) = "(" ++ show a ++ " × " ++ show b ++ ")"
+  show (Bool) = "Bool"
+  show (Ints) = "Z"
 -- 2. Lexer
 
 lexer :: String -> [Token]
@@ -38,10 +51,11 @@ lexer ('(':')':xs) = USym : lexer xs
 lexer ('[':']':xs) = NilT : lexer xs
 lexer ('@':xs) = ConsT : lexer xs
 lexer ('f':'o':'l':'d':xs) = FoldT : lexer xs
-lexer ('.' :xs) = Dot  : lexer xs
+lexer ('.' :xs) = Dot  : lexer xs
 lexer ('\\':xs) = Backslash : lexer xs
 lexer ('(' :xs) = LPar : lexer xs
 lexer (')' :xs) = RPar : lexer xs
+lexer (',' :xs) = Comma : lexer xs  -- Add comma handling
 lexer (x : xs) | isSpace x = lexer xs
 lexer (x : xs) | isAlpha x = VSym (x : takeWhile isAlphaNum xs)
                               : lexer (dropWhile isAlphaNum xs)
@@ -70,6 +84,8 @@ sr s []          = s
 -- * Parentheses around the body of the lambda are unnecessary;
 --   the scope of variables bound before the dot extends as far out as possible.
 sr :: [Token] -> [Token] -> [Token]
+-- Add these rules for pairs (before other rules)
+sr (RPar : PT t2 : Comma : PT t1 : LPar : s) q = sr (PT (Pair t1 t2) : s) q
 -- Unit
 sr (USym : s) q = sr (PT UT : s) q
 -- Lists
@@ -137,6 +153,9 @@ tsubst (x,t) (Unit)      = Unit
 tsubst (a,t) (TVar b)    = if a==b then t else TVar b
 tsubst (a,t) (List l)    = List (tsubst (a,t) l)
 tsubst (a,t) (Fun t1 t2) = Fun (tsubst (a,t) t1) (tsubst (a,t) t2)
+tsubst (a,t) (Prod t1 t2) = Prod (tsubst (a,t) t1) (tsubst (a,t) t2)
+tsubst (a,t) Bool = Bool
+tsubst (a,t) Ints = Ints
 csubst :: (TVars,Types) -> Constr -> Constr
 csubst s (lhs,rhs) = (tsubst s lhs , tsubst s rhs)
 
@@ -146,6 +165,9 @@ getTVars (TVar a)    = [a]
 getTVars (Unit)      = []
 getTVars (List t)    = getTVars t
 getTVars (Fun t1 t2) = getTVars t1 ++ getTVars t2
+getTVars (Prod t1 t2) = getTVars t1 ++ getTVars t2
+getTVars Bool = []
+getTVars Ints = []
 getTVarsCxt :: Cxt -> [TVars]
 getTVarsCxt []              = []
 getTVarsCxt ((x,t) : gamma) = getTVars t ++ getTVarsCxt gamma
@@ -156,30 +178,62 @@ tvarsConstrs ((l,r):cs) = getTVars l ++ getTVars r ++ tvarsConstrs cs
 
 -- The function to generate the constraints
 genConstrs :: Cxt -> Terms -> Types -> [Constr]
-genConstrs gamma (Var x)   a = case lookup x gamma of
-             Just a' -> [(a',a)]
-             Nothing -> error $ "Variable undeclared: " ++ x
+genConstrs gamma (Var "fst") a = 
+    let b = freshVar (getTVars a ++ getTVarsCxt gamma)
+        c = freshVar (b : getTVars a ++ getTVarsCxt gamma)
+    in [(a, Fun (Prod (TVar b) (TVar c)) (TVar b))]
+
+genConstrs gamma (Var "snd") a = 
+    let b = freshVar (getTVars a ++ getTVarsCxt gamma)
+        c = freshVar (b : getTVars a ++ getTVarsCxt gamma)
+    in [(a, Fun (Prod (TVar b) (TVar c)) (TVar c))]
+
+genConstrs gamma (Var x) a = case lookup x gamma of
+    Just a' -> [(a',a)]
+    Nothing -> error $ "Variable undeclared: " ++ x
 genConstrs gamma (App s t) b =
-  let a = freshVar (getTVars b ++ getTVarsCxt gamma)
-      cs1 = genConstrs gamma s (Fun (TVar a) b)
-      a' = freshVar (a : tvarsConstrs cs1)
-      cs2 = genConstrs gamma t (TVar a')
-   in (TVar a,TVar a') : cs1 ++ cs2
-genConstrs gamma (Abs x t) a =
-  let tvs = getTVars a ++ getTVarsCxt gamma
-      a1 = freshVar tvs
-      a2 = freshVar (a1 : tvs)
-      cs = genConstrs ((x,TVar a1): gamma) t (TVar a2)
-   in (a,Fun (TVar a1) (TVar a2)) : cs
-genConstrs gamma (UT)      a = [(a,Unit)]
-genConstrs gamma (Nil)     a = [(a,List (TVar b))]
+    let a = freshVar (getTVars b ++ getTVarsCxt gamma)
+        cs1 = genConstrs gamma s (Fun (TVar a) b)
+        cs2 = genConstrs gamma t (TVar a)
+    in cs1 ++ cs2
+genConstrs gamma (Pair s t) a =
+    let a1 = freshVar (getTVars a ++ getTVarsCxt gamma)
+        a2 = freshVar (a1 : getTVars a ++ getTVarsCxt gamma)
+        cs1 = genConstrs gamma s (TVar a1)
+        cs2 = genConstrs gamma t (TVar a2)
+    in (a, Prod (TVar a1) (TVar a2)) : cs1 ++ cs2
+genConstrs gamma (Fst t) a =
+    let b = freshVar (getTVars a ++ getTVarsCxt gamma)
+        cs = genConstrs gamma t (Prod a (TVar b))
+    in cs
+
+genConstrs gamma (Snd t) a =
+    let b = freshVar (getTVars a ++ getTVarsCxt gamma)
+        cs = genConstrs gamma t (Prod (TVar b) a)
+    in cs
+
+genConstrs gamma TT Bool = []
+genConstrs gamma FF Bool = []
+genConstrs gamma (IfThenElse c s t) a =
+    let cs1 = genConstrs gamma c Bool
+        cs2 = genConstrs gamma s a
+        cs3 = genConstrs gamma t a
+    in cs1 ++ cs2 ++ cs3
+genConstrs gamma (IsPos t) Bool =
+    genConstrs gamma t Ints
+genConstrs gamma Y (Fun (Fun a b') b) 
+    | b == b'   = []  -- Y has type ((a -> b) -> (a -> b)) -> (a -> b)
+    | otherwise = error "Invalid type for Y combinator"
+genConstrs gamma (Num _) Ints = []
+genConstrs gamma (UT) a = [(a,Unit)]
+genConstrs gamma (Nil) a = [(a,List (TVar b))]
   where b = freshVar (getTVars a ++ getTVarsCxt gamma)
 genConstrs gamma (Cons h t) b =
   let a = freshVar (getTVars b ++ getTVarsCxt gamma)
       cs1 = genConstrs gamma h (TVar a)
       a' = freshVar (a : tvarsConstrs cs1)
       cs2 = genConstrs gamma t (TVar a')
-   in (TVar a' , List (TVar a)) : (b,TVar a') : cs1 ++ cs2
+   in (TVar a', List (TVar a)) : (b,TVar a') : cs1 ++ cs2
 genConstrs gamma (Fold s t u) b =
   let cs1 = genConstrs gamma t b
       cs1vars = tvarsConstrs cs1
@@ -188,6 +242,12 @@ genConstrs gamma (Fold s t u) b =
       a' = freshVar (a : tvarsConstrs cs2)
       cs3 = genConstrs gamma u (TVar a')
    in (TVar a', List (TVar a)) : cs1 ++ cs2 ++ cs3
+genConstrs gamma (Abs x t) a =
+  let tvs = getTVars a ++ getTVarsCxt gamma
+      a1 = freshVar tvs
+      a2 = freshVar (a1 : tvs)
+      cs = genConstrs ((x,TVar a1): gamma) t (TVar a2)
+   in (a,Fun (TVar a1) (TVar a2)) : cs
 
 -- Solve the list of constraints
 unify :: [Constr] -> Either String TSub
@@ -200,6 +260,7 @@ unify ((TVar a,rhs):cs)
       Left err -> Left err
 unify ((lhs,TVar a):cs) = unify ((TVar a,lhs) : cs)
 unify ((Fun s1 s2,Fun t1 t2) : cs) = unify ((s1,t1) : (s2,t2) : cs)
+unify ((Prod s1 s2,Prod t1 t2) : cs) = unify ((s1,t1) : (s2,t2) : cs)
 unify ((List a,List b) : cs) = unify ((a,b) : cs)
 unify ((lhs,rhs):cs) = Left $ "Type error: cannot unify " ++ show lhs ++ " with " ++ show rhs
 
@@ -242,18 +303,33 @@ subst xt (Nil) = Nil
 subst xt (Cons s t)   = Cons (subst xt s) (subst xt t)
 subst xt (Fold s t u) = Fold (subst xt s) (subst xt t) (subst xt u)
 
+-- Root reduction (->0)
+red0 :: Terms -> Maybe Terms
+red0 (App (Abs x s) t) = Just $ subst (x,t) s
+red0 (Fst (Pair s t)) = Just s
+red0 (Snd (Pair s t)) = Just t
+red0 (IfThenElse TT s t) = Just s
+red0 (IfThenElse FF s t) = Just t
+red0 (IsPos (Num n)) | n > 0 = Just TT
+                     | otherwise = Just FF
+red0 (App Y t) = Just $ App t (App Y t)
+red0 _ = Nothing
+
+-- Parallel reduction (->)
 red :: Terms -> Terms
--- Rewrite rules
-red (App (Abs x s) t) = subst (x,t) s
-red (Fold s t Nil) = t
-red (Fold s t (Cons h r)) = App (App s h) (Fold s t r)
--- Congruence rules
-red (Fold s t u) = Fold (red s) (red t) (red u)
-red (Cons s t) = Cons (red s) (red t)
-red (App s t) = App (red s) (red t)
-red (Abs x r) = Abs x (red r)
--- Base case
-red t = t
+red t = case red0 t of
+    Just t' -> t'
+    Nothing -> case t of
+        -- Congruence rules
+        App s t -> App (red s) (red t)
+        Abs x r -> Abs x (red r)
+        Pair s t -> Pair (red s) (red t)
+        Fst s -> Fst (red s)
+        Snd s -> Snd (red s)
+        IfThenElse c s t -> IfThenElse (red c) (red s) (red t)
+        IsPos s -> IsPos (red s)
+        -- Base cases (reflexivity)
+        _ -> t
 
 nf :: Terms -> Terms
 nf t = if t == t' then t else nf t' where t' = red t
