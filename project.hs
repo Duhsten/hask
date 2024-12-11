@@ -345,19 +345,6 @@ red (Lte s t) = Lte (red s) (red t)  -- General Lte case after specific case
 -- Base case
 red t = t
 
--- 8. Examples
-
-ex0 :: String
-ex0 = "(\\x.x(\\y.y x))(\\z .z)(\\y.y y)"
-
-ex1 :: String
-ex1 = "\\x.\\y.(x y y)"
-
-ex2 :: String
-ex2 = "\\x.\\y.(y (y x))"
-
-ex3 :: String
-ex3 = "\\x.\\y.x (y x)"
 
 -- Pretty print a test result
 showResult :: String -> IO ()
@@ -386,7 +373,8 @@ tests = [
   "\\x.\\y.x + y",
   "1",
   "\\x.x + 1",
-  "\\x.\\y.IfThenElse(x <= y, x, y)"
+  "\\x.\\y.IfThenElse(x <= y, x, y)",
+  "\\x.\\y.x(fst y) + snd y"
   ]
 
 -- Main function to run all tests
