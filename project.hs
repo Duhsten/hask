@@ -20,7 +20,7 @@ data Terms = Var Vars | App Terms Terms | Abs Vars Terms | UT
 data Token = VSym Vars | Backslash | Dot | LPar | RPar | USym
            | NilT | ConsT | FoldT 
            | TTT | FFF | IfT | ThenT | ElseT
-           | PairT | FstT | SndT
+           | PairT | FstT | SndT | Comma
            | NumT Int | PlusT | LteT
            | PT Terms | Err String
   deriving (Show,Eq)
@@ -31,7 +31,7 @@ instance Show Types where
   show (List a) = "[" ++ show a ++ "]"
   show (Bool) = "B"
   show (Int) = "Z" 
-  show (Prod t1 t2) = "(" ++ show t1 ++ " × " ++ show t2 ++ ")"
+  show (Prod t1 t2) = "(" ++ show t1 ++ " * " ++ show t2 ++ ")"
   show (Fun t1@(Fun _ _) t2) = "(" ++ show t1 ++ ")" ++ " -> " ++ show t2
   show (Fun t1 t2) = show t1 ++ " -> " ++ show t2
 -- 2. Lexer
@@ -65,6 +65,7 @@ lexer (x : xs) | isAlpha x = VSym (x : takeWhile isAlphaNum xs)
 -- alternative variable handler
 -- lexer (x:xs) | isAlpha x = VSym var : lexer rest
 --     where (var,rest) = span isAlphaNum (x:xs)
+lexer (',':xs) = Comma : lexer xs
 lexer xs = [Err (drop 10 xs)]
 
 -- 3. Parser
@@ -90,23 +91,39 @@ sr :: [Token] -> [Token] -> [Token]
 -- Unit
 sr (USym : s) q = sr (PT UT : s) q
 -- Lists
-sr (NilT                          : s) q = sr (PT Nil : s) q
-sr (PT t2 : ConsT : PT t1         : s) q = sr (PT (Cons t1 t2) : s) q
+sr (NilT : s) q = sr (PT Nil : s) q
+sr (PT t2 : ConsT : PT t1 : s) q = sr (PT (Cons t1 t2) : s) q
 sr (PT t3 : PT t2 : PT t1 : FoldT : s) q = sr (PT (Fold t1 t2 t3) : s) q
+-- Booleans
+sr (TTT : s) q = sr (PT TT : s) q
+sr (FFF : s) q = sr (PT FF : s) q
+-- If-Then-Else
+sr (PT e3 : ElseT : PT e2 : ThenT : PT e1 : IfT : s) q = 
+  sr (PT (IfThenElse e1 e2 e3) : s) q
+-- Pairs
+sr (RPar : PT t2 : PT t1 : LPar : s) q = sr (PT (Pair t1 t2) : s) q
+sr (PT t : FstT : s) q = sr (PT (Fst t) : s) q
+sr (PT t : SndT : s) q = sr (PT (Snd t) : s) q
+-- Pairs with comma notation
+sr (RPar : PT t2 : Comma : PT t1 : LPar : s) q = sr (PT (Pair t1 t2) : s) q
+-- Numbers and Operations
+sr (NumT n : s) q = sr (PT (Num n) : s) q
+sr (PT t2 : PlusT : PT t1 : s) q = sr (PT (Add t1 t2) : s) q
+sr (PT t2 : LteT : PT t1 : s) q = sr (PT (Lte t1 t2) : s) q
 -- Parentheses
 sr (RPar : PT t : LPar : s) q = sr (PT t : s) q
 -- Application
-sr (PT t2 : PT t1      : s) q = sr (PT (App t1 t2) : s) q
+sr (PT t2 : PT t1 : s) q = sr (PT (App t1 t2) : s) q
 -- Abstraction
-sr st@(VSym x : Backslash : s) (q : qs) = sr (q : st) qs -- Blocks Var rule after lambda
-sr (VSym y : VSym x : Backslash : s) q    -- After a lambda, a sequence of vars becomes
-  = sr (VSym y : Backslash : Dot : VSym x : Backslash : s) q  -- a sequence of lambdas
-sr (PT t : Dot : VSym x : Backslash : s) []  -- The scope of abstracted variables
-  = sr (PT (Abs x t) : s) []                 -- extends as far as possible:
-sr (RPar : PT t : Dot : VSym x : Backslash : s) q  -- either to the end of the term
-  = sr (RPar : PT (Abs x t) : s) q                 -- or until a closing parens
+sr st@(VSym x : Backslash : s) (q : qs) = sr (q : st) qs
+sr (VSym y : VSym x : Backslash : s) q = 
+  sr (VSym y : Backslash : Dot : VSym x : Backslash : s) q
+sr (PT t : Dot : VSym x : Backslash : s) [] = 
+  sr (PT (Abs x t) : s) []
+sr (RPar : PT t : Dot : VSym x : Backslash : s) q = 
+  sr (RPar : PT (Abs x t) : s) q
 -- Variables
-sr (VSym x : s)             q = sr (PT (Var x) : s) q
+sr (VSym x : s) q = sr (PT (Var x) : s) q
 -- Shift
 sr s (q:qs) = sr (q:s) qs
 -- Error
@@ -149,10 +166,11 @@ type Constr = (Types,Types)
 type TSub = [(TVars,Types)]
 
 tsubst :: (TVars,Types) -> Types -> Types
-tsubst (x,t) (Unit)      = Unit
-tsubst (a,t) (TVar b)    = if a==b then t else TVar b
-tsubst (a,t) (List l)    = List (tsubst (a,t) l)
+tsubst (x,t) Unit = Unit
+tsubst (a,t) (TVar b) = if a==b then t else TVar b
+tsubst (a,t) (List l) = List (tsubst (a,t) l)
 tsubst (a,t) (Fun t1 t2) = Fun (tsubst (a,t) t1) (tsubst (a,t) t2)
+tsubst (a,t) (Prod t1 t2) = Prod (tsubst (a,t) t1) (tsubst (a,t) t2)
 csubst :: (TVars,Types) -> Constr -> Constr
 csubst s (lhs,rhs) = (tsubst s lhs , tsubst s rhs)
 
@@ -162,6 +180,9 @@ getTVars (TVar a)    = [a]
 getTVars (Unit)      = []
 getTVars (List t)    = getTVars t
 getTVars (Fun t1 t2) = getTVars t1 ++ getTVars t2
+getTVars (Bool)      = []
+getTVars (Int)       = []
+getTVars (Prod t1 t2) = getTVars t1 ++ getTVars t2
 getTVarsCxt :: Cxt -> [TVars]
 getTVarsCxt []              = []
 getTVarsCxt ((x,t) : gamma) = getTVars t ++ getTVarsCxt gamma
@@ -241,6 +262,7 @@ unify ((TVar a,rhs):cs)
 unify ((lhs,TVar a):cs) = unify ((TVar a,lhs) : cs)
 unify ((Fun s1 s2,Fun t1 t2) : cs) = unify ((s1,t1) : (s2,t2) : cs)
 unify ((List a,List b) : cs) = unify ((a,b) : cs)
+unify ((Prod s1 s2,Prod t1 t2) : cs) = unify ((s1,t1) : (s2,t2) : cs)
 unify ((lhs,rhs):cs) = error $ "Type error: " ++ show lhs ++ " = " ++ show rhs
 
 -- Applying a list of type substitutions to one type
@@ -322,13 +344,12 @@ showResult input = do
 tests :: [String]
 tests = [
   "\\x.\\y.x (y x)",
+  "\\x.\\y.(x y y)",
+  "\\x.\\y.(y (y x))",
+  "\\x.\\y.x (y x)",
   "\\x.\\y.\\z.((x z), (y z))",
-  "(tt, \\x.x(ff))",
-  "IfThenElse (tt, \\x.x, \\y.ff)",
-  "\\xy.yIfThenElse(x, tt, yx)",
-  "\\x.IfThenElse(x ≤ 0, 0, x)",
-  "\\xy.x(fst y) + snd y",
-  "\\x.x (IfThenElse(x0, 1, 2))"
+  "\\p.\\f.f (snd p) (fst p)",
+  "(tt, \\x.x(ff))"
   ]
 
 -- Main function to run all tests
