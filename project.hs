@@ -171,6 +171,8 @@ tsubst (a,t) (TVar b) = if a==b then t else TVar b
 tsubst (a,t) (List l) = List (tsubst (a,t) l)
 tsubst (a,t) (Fun t1 t2) = Fun (tsubst (a,t) t1) (tsubst (a,t) t2)
 tsubst (a,t) (Prod t1 t2) = Prod (tsubst (a,t) t1) (tsubst (a,t) t2)
+tsubst (a,t) Bool = Bool
+tsubst (a,t) Int = Int
 csubst :: (TVars,Types) -> Constr -> Constr
 csubst s (lhs,rhs) = (tsubst s lhs , tsubst s rhs)
 
@@ -293,25 +295,44 @@ subst xt (App u v) = App (subst xt u) (subst xt v)
 subst (x,t) (Abs y r)
   | x==y = (Abs y r)
   | not (elem y (fv t)) = Abs y (subst (x,t) r)
-  | otherwise =  -- If the abstracted variable occurs in t, we must rename
+  | otherwise = 
       let z = freshVar (x : y : fv t ++ fv r)
-          r' = subst (y , Var z) r -- r' is renaming y to z in the body of Abs
+          r' = subst (y , Var z) r
        in Abs z (subst (x,t) r')
 subst xt (UT) = UT
 subst xt (Nil) = Nil
-subst xt (Cons s t)   = Cons (subst xt s) (subst xt t)
+subst xt (Cons s t) = Cons (subst xt s) (subst xt t)
 subst xt (Fold s t u) = Fold (subst xt s) (subst xt t) (subst xt u)
+subst xt TT = TT
+subst xt FF = FF
+subst xt (IfThenElse c t e) = IfThenElse (subst xt c) (subst xt t) (subst xt e)
+subst xt (Pair s t) = Pair (subst xt s) (subst xt t)
+subst xt (Fst t) = Fst (subst xt t)
+subst xt (Snd t) = Snd (subst xt t)
+subst xt (Num n) = Num n
+subst xt (Add s t) = Add (subst xt s) (subst xt t)
+subst xt (Lte s t) = Lte (subst xt s) (subst xt t)
 
 red :: Terms -> Terms
 -- Rewrite rules
 red (App (Abs x s) t) = subst (x,t) s
 red (Fold s t Nil) = t
 red (Fold s t (Cons h r)) = App (App s h) (Fold s t r)
+red (Fst (Pair s t)) = s
+red (Snd (Pair s t)) = t
+red (IfThenElse TT t _) = t
+red (IfThenElse FF _ e) = e
 -- Congruence rules
 red (Fold s t u) = Fold (red s) (red t) (red u)
 red (Cons s t) = Cons (red s) (red t)
 red (App s t) = App (red s) (red t)
 red (Abs x r) = Abs x (red r)
+red (Pair s t) = Pair (red s) (red t)
+red (Fst t) = Fst (red t)
+red (Snd t) = Snd (red t)
+red (IfThenElse c t e) = IfThenElse (red c) (red t) (red e)
+red (Add s t) = Add (red s) (red t)
+red (Lte s t) = Lte (red s) (red t)
 -- Base case
 red t = t
 
@@ -349,7 +370,8 @@ tests = [
   "\\x.\\y.x (y x)",
   "\\x.\\y.\\z.((x z), (y z))",
   "\\p.\\f.f (snd p) (fst p)",
-  "(tt, \\x.x(ff))"
+  "(tt, \\x.x(ff))",
+  "IfThenElse (tt, \\x.x, \\y.ff)"
   ]
 
 -- Main function to run all tests
