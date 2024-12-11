@@ -58,6 +58,7 @@ lexer ('f':'s':'t':xs) = FstT : lexer xs
 lexer ('s':'n':'d':xs) = SndT : lexer xs
 lexer ('+':xs) = PlusT : lexer xs
 lexer ('≤':xs) = LteT : lexer xs
+lexer ('<':'=':xs) = LteT : lexer xs
 lexer (',':xs) = Comma : lexer xs
 lexer (x:xs) | isDigit x = 
   let (num,rest) = span isDigit (x:xs)
@@ -99,6 +100,11 @@ sr (FFF : s) q = sr (PT FF : s) q
 -- If-Then-Else
 sr (RPar : PT e3 : Comma : PT e2 : Dot : VSym x : Backslash : Comma : PT e1 : LPar : IfThenElseT : s) q = 
   sr (PT (IfThenElse e1 (Abs x e2) e3) : s) q
+sr (RPar : PT e3 : Comma : PT e2 : Comma : PT e1 : LPar : IfThenElseT : s) q = 
+  sr (PT (IfThenElse e1 e2 e3) : s) q
+-- If-Then-Else with conditions
+sr (RPar : PT e3 : Comma : PT e2 : Comma : PT (Lte t1 t2) : LPar : IfThenElseT : s) q = 
+  sr (PT (IfThenElse (Lte t1 t2) e2 e3) : s) q
 sr (RPar : PT e3 : Comma : PT e2 : Comma : PT e1 : LPar : IfThenElseT : s) q = 
   sr (PT (IfThenElse e1 e2 e3) : s) q
 -- Pairs
@@ -323,6 +329,8 @@ red (Fst (Pair s t)) = s
 red (Snd (Pair s t)) = t
 red (IfThenElse TT t _) = t
 red (IfThenElse FF _ e) = e
+red (Add (Num n1) (Num n2)) = Num (n1 + n2)  -- Move numeric evaluation rules
+red (Lte (Num n1) (Num n2)) = if n1 <= n2 then TT else FF  -- up here
 -- Congruence rules
 red (Fold s t u) = Fold (red s) (red t) (red u)
 red (Cons s t) = Cons (red s) (red t)
@@ -332,8 +340,8 @@ red (Pair s t) = Pair (red s) (red t)
 red (Fst t) = Fst (red t)
 red (Snd t) = Snd (red t)
 red (IfThenElse c t e) = IfThenElse (red c) (red t) (red e)
-red (Add s t) = Add (red s) (red t)
-red (Lte s t) = Lte (red s) (red t)
+red (Add s t) = Add (red s) (red t)  -- General Add case after specific case
+red (Lte s t) = Lte (red s) (red t)  -- General Lte case after specific case
 -- Base case
 red t = t
 
@@ -373,7 +381,12 @@ tests = [
   "\\p.\\f.f (snd p) (fst p)",
   "(tt, \\x.x(ff))",
   "IfThenElse (tt, \\x.x, \\y.ff)",
-  "\\x.\\y.y(IfThenElse(x, tt, y x))"
+  "\\x.\\y.y(IfThenElse(x, tt, y x))",
+  "\\x.IfThenElse(x <= 0, 0, x)",
+  "\\x.\\y.x + y",
+  "1",
+  "\\x.x + 1",
+  "\\x.\\y.IfThenElse(x <= y, x, y)"
   ]
 
 -- Main function to run all tests
