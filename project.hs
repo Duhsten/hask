@@ -350,48 +350,44 @@ subst xt (Num n) = Num n
 subst xt (Add s t) = Add (subst xt s) (subst xt t)
 subst xt (Lte s t) = Lte (subst xt s) (subst xt t)
 
-red :: Terms -> Terms
--- Rewrite rules (Introduction/Elimination interactions)
-red (App (Abs x s) t) = subst (x,t) s                    -- (1) Beta reduction
-red (Fst (Pair s t)) = s                                 -- (2) Pair projection
-red (Snd (Pair s t)) = t                                 -- (3) Pair projection
-red (IfThenElse TT t _) = t                             -- (4) If-true
-red (IfThenElse FF _ e) = e                             -- (5) If-false
-red (Add (Num n1) (Num n2)) = Num (n1 + n2)            -- (6) Integer arithmetic
-red (Sub (Num n1) (Num n2)) = Num (n1 - n2)            -- Integer arithmetic
-red (Mul (Num n1) (Num n2)) = Num (n1 * n2)            -- Integer arithmetic
-red (Lte (Num n1) (Num n2)) = if n1 <= n2 then TT else FF  -- Integer comparison
-red (IsPos (Num n)) = if n > 0 then TT else FF         -- (7) Integer predicate
-red (App Y t) = App t (App Y t)                        -- (8) Y-combinator
+-- Root reduction (->0)
+redRoot :: Terms -> Maybe Terms
+redRoot (App (Abs x s) t) = Just $ subst (x,t) s                    -- (1)
+redRoot (Fst (Pair s t)) = Just s                                   -- (2)
+redRoot (Snd (Pair s t)) = Just t                                   -- (3)
+redRoot (IfThenElse TT t _) = Just t                               -- (4)
+redRoot (IfThenElse FF _ e) = Just e                               -- (5)
+redRoot (Add (Num n1) (Num n2)) = Just $ Num (n1 + n2)            -- (6)
+redRoot (IsPos (Num n)) = Just $ if n > 0 then TT else FF         -- (7)
+redRoot (App Y t) = Just $ App t (App Y t)                        -- (8)
+redRoot _ = Nothing
 
--- List operations
-red (Fold s t Nil) = t
-red (Fold s t (Cons h r)) = App (App s h) (Fold s t r)
+-- Parallel reduction (->)
+redPar :: Terms -> Terms
+redPar t = case redRoot t of
+  Just t' -> t'
+  Nothing -> case t of
+    -- Variables and constants reduce to themselves
+    Var x -> Var x
+    Num n -> Num n
+    TT -> TT
+    FF -> FF
+    Y -> Y
+    
+    -- Congruence rules
+    App s t -> App (redPar s) (redPar t)
+    Abs x r -> Abs x (redPar r)
+    Pair s t -> Pair (redPar s) (redPar t)
+    Fst t -> Fst (redPar t)
+    Snd t -> Snd (redPar t)
+    IfThenElse c t e -> IfThenElse (redPar c) (redPar t) (redPar e)
+    Add s t -> Add (redPar s) (redPar t)
+    Sub s t -> Sub (redPar s) (redPar t)
+    Mul s t -> Mul (redPar s) (redPar t)
+    IsPos t -> IsPos (redPar t)
+    _ -> t
 
--- Congruence rules (Reduction under context)
-red (App s t) = App (red s) (red t)
-red (Abs x r) = Abs x (red r)
-red (Pair s t) = Pair (red s) (red t)
-red (Fst t) = Fst (red t)
-red (Snd t) = Snd (red t)
-red (IfThenElse c t e) = IfThenElse (red c) (red t) (red e)
-red (Add s t) = Add (red s) (red t)
-red (Sub s t) = Sub (red s) (red t)
-red (Mul s t) = Mul (red s) (red t)
-red (Lte s t) = Lte (red s) (red t)
-red (IsPos t) = IsPos (red t)
-red (Fold s t u) = Fold (red s) (red t) (red u)
-red (Cons s t) = Cons (red s) (red t)
-
--- Base cases (Already in normal form)
-red Y = Y
-red (Num n) = Num n
-red TT = TT
-red FF = FF
-red t = t
-
-
--- Pretty print a test result
+-- Pretty neat little test function
 showResult :: String -> IO ()
 showResult input = do
   putStrLn $ "\nTest: " ++ input
@@ -399,7 +395,7 @@ showResult input = do
     [PT term] -> do
       putStrLn $ "Parsed term: " ++ show term
       putStrLn $ "Type: " ++ show (infer input)
-      putStrLn $ "Reduced: " ++ show (red term)
+      putStrLn $ "Reduced: " ++ show (redPar term)
     err -> putStrLn $ "Parse error: " ++ show err
 
 -- List of test cases
